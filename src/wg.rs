@@ -246,7 +246,11 @@ impl UAPIClient {
                     match last.parse::<i64>() {
                         Ok(timestamp) => {
                             if timestamp == 0 {
-                                // do nothing because it's invalid
+                                // a healthy tunnel rekeys about every 2 minutes, so
+                                // a zero value at the first check (5 min after start)
+                                // means the handshake never completed at all
+                                log::warn!("no handshake for {} since start", name);
+                                timeout = true;
                             } else if let Some(nt) = chrono::DateTime::from_timestamp(timestamp, 0)
                             {
                                 let now = chrono::Utc::now().to_utc();

@@ -1311,14 +1311,20 @@ impl Client {
         Ok(wg_conf)
     }
 
+    // Reports the connection status (type=100) to the server so it does not
+    // reap the VPN peer right after /vpn/conn. The first report is sent
+    // immediately, further ones every `interval` seconds. Some servers accept
+    // only the initial report and reject later ones with error 1000, so on the
+    // first failure we stop reporting but keep running: the wg handshake
+    // watchdog in main decides whether the connection is really dead.
     pub async fn keep_alive_vpn(&mut self, conf: &WgConf, interval: u64) {
+        let mut reporting = true;
         loop {
-            log::info!("keep alive");
-            match self.report_vpn_status(conf).await {
-                Ok(_) => (),
-                Err(err) => {
-                    log::warn!("keep alive error: {}", err);
-                    return;
+            if reporting {
+                log::info!("keep alive");
+                if let Err(err) = self.report_vpn_status(conf).await {
+                    log::warn!("stop reporting connection status: {}", err);
+                    reporting = false;
                 }
             }
             tokio::time::sleep(Duration::from_secs(interval)).await;

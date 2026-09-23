@@ -194,9 +194,12 @@ async fn run() -> Result<()> {
         _ = wait_for_shutdown_signal() => {},
 
         // keep alive
-        // _ = c.keep_alive_vpn(&wg_conf, 60) => {
-        //     exit_code = ETIMEDOUT;
-        // },
+        // Reports the connection to the server (type=100) immediately after
+        // connect; without that first report the server reaps the VPN peer
+        // ~30s after /vpn/conn and the wg tunnel goes silent. This branch never
+        // completes on its own: a failing report only stops further reports,
+        // the handshake watchdog above decides the connection fate.
+        _ = c.keep_alive_vpn(&wg_conf, 60) => {},
 
         // check wg handshake and exit if timeout
         _ = async {
