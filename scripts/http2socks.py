@@ -12,18 +12,22 @@ whenever a new upstream connection is made, so config changes apply without
 restarting the bridge.
 
 Usage:
-    python3 http2socks.py [listen_port]      # default 8118
+    python3 http2socks.py [-p PORT] [-c CONFIG]
+        -p/--port    local listen port (default 8118)
+        -c/--config  corplink-rs config file (default: config.json
+                     in this script's directory)
 """
+import argparse
 import json
+import os
 import select
 import socket
 import struct
-import sys
 import threading
 from urllib.parse import urlsplit
 
-SOCKS_ADDR = ("127.0.0.1", 1080)
-CONF_FILE = "/docker_shared/tools/corplink-rs/target/release/config.json"
+SOCKS_ADDR = ("0.0.0.0", 1080)
+CONF_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 LISTEN_HOST = "127.0.0.1"
 DEFAULT_LISTEN_PORT = 8118
 IDLE_TIMEOUT = 300  # seconds without traffic before a tunnel is dropped
@@ -136,13 +140,21 @@ def handle(client):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_LISTEN_PORT
+    global CONF_FILE
+    ap = argparse.ArgumentParser(
+        description="HTTP (CONNECT) proxy bridging to the corplink-rs SOCKS5 proxy.")
+    ap.add_argument("-p", "--port", type=int, default=DEFAULT_LISTEN_PORT,
+                    help=f"local port to listen on (default {DEFAULT_LISTEN_PORT})")
+    ap.add_argument("-c", "--config", metavar="FILE", default=CONF_FILE,
+                    help=f"corplink-rs config file (default: {CONF_FILE})")
+    args = ap.parse_args()
+    CONF_FILE = args.config
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind((LISTEN_HOST, port))
+    srv.bind((LISTEN_HOST, args.port))
     srv.listen(64)
-    print(f"http2socks: {LISTEN_HOST}:{port} -> socks5://{SOCKS_ADDR[0]}:{SOCKS_ADDR[1]}",
-          flush=True)
+    print(f"http2socks: {LISTEN_HOST}:{args.port} -> socks5://{SOCKS_ADDR[0]}:{SOCKS_ADDR[1]} "
+          f"(config: {CONF_FILE})", flush=True)
     while True:
         client, _ = srv.accept()
         threading.Thread(target=handle, args=(client,), daemon=True).start()

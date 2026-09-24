@@ -1,0 +1,10 @@
+{
+  "company_name": "xxxx",
+  "username": "xxxx",
+  "password": null,
+  "platform": "lark",
+  "interface_name": "corplink",
+  "debug_wg": false,
+  "socks5_username": null,
+  "socks5_password": null,
+}
