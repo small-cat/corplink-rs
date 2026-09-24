@@ -32,6 +32,16 @@ use crate::utils;
 
 const COOKIE_FILE_SUFFIX: &str = "cookies.json";
 
+// Outcome of a /vpn/report keep-alive call.
+#[derive(Debug, PartialEq, Eq)]
+pub enum VpnKeepAlive {
+    // report accepted, the server-side session is alive
+    Alive,
+    // the server expired our session (code 1000): the wg peer is gone and
+    // only a fresh /vpn/conn can re-register it
+    SessionGone,
+}
+
 fn merge_additional_routes(
     mut routes: Vec<String>,
     additional_routes: &[String],
@@ -1311,29 +1321,35 @@ impl Client {
         Ok(wg_conf)
     }
 
-    // Reports the connection status (type=100) to the server so it does not
-    // reap the VPN peer right after /vpn/conn. The first report is sent
-    // immediately, further ones every `interval` seconds. Some servers accept
-    // only the initial report and reject later ones with error 1000, so on the
-    // first failure we stop reporting but keep running: the wg handshake
-    // watchdog in main decides whether the connection is really dead.
+    // Reports the connection status (type=100) to the server and watches for
+    // the server expiring our session. The first report is sent immediately,
+    // further ones every `interval` seconds. Transient errors only log; when
+    // the server reports the session gone (code 1000) this future completes
+    // so main can tear down and reconnect: some servers expire the wg peer a
+    // few tens of seconds after /vpn/conn and nothing but a fresh /vpn/conn
+    // (with a new tunnel address) revives the tunnel.
     pub async fn keep_alive_vpn(&mut self, conf: &WgConf, interval: u64) {
-        let mut reporting = true;
         loop {
-            if reporting {
-                log::info!("keep alive");
-                if let Err(err) = self.report_vpn_status(conf).await {
-                    log::warn!("stop reporting connection status: {}", err);
-                    reporting = false;
+            log::info!("keep alive");
+            match self.report_vpn_status(conf).await {
+                Ok(VpnKeepAlive::Alive) => {}
+                Ok(VpnKeepAlive::SessionGone) => {
+                    log::warn!("vpn session expired on server, reconnecting");
+                    return;
                 }
+                Err(err) => log::warn!("keep alive error: {}", err),
             }
             tokio::time::sleep(Duration::from_secs(interval)).await;
         }
     }
 
-    pub async fn report_vpn_status(&mut self, conf: &WgConf) -> Result<()> {
+    pub async fn report_vpn_status(&mut self, conf: &WgConf) -> Result<VpnKeepAlive> {
         let mut m = Map::new();
-        m.insert("ip".to_string(), json!(conf.address));
+        // the server matches the report against its peer records by ip and
+        // expects the bare address; sending the CIDR form ("a.b.c.d/24") is
+        // rejected the same way as an unknown connection
+        let ip = conf.address.split('/').next().unwrap_or(&conf.address);
+        m.insert("ip".to_string(), json!(ip));
         m.insert("public_key".to_string(), json!(conf.public_key));
         m.insert(
             "mode".to_string(),
@@ -1348,7 +1364,17 @@ impl Client {
             .request::<Map<String, Value>>(ApiName::KeepAliveVPN, Some(m))
             .await?;
         match resp.code {
-            0 => Ok(()),
+            0 => Ok(VpnKeepAlive::Alive),
+            // code 1000 (usually with action "alert" and an empty message)
+            // means the server no longer knows this connection: the wg peer
+            // has been expired server-side and reports cannot revive it
+            1000 => {
+                log::warn!(
+                    "vpn report rejected with code 1000 (action {:?}): session expired",
+                    resp.action
+                );
+                Ok(VpnKeepAlive::SessionGone)
+            }
             _ => bail!(format!(
                 "failed to report connection with error {}: {}",
                 resp.code,
@@ -1359,7 +1385,10 @@ impl Client {
 
     pub async fn disconnect_vpn(&mut self, wg_conf: &WgConf) -> Result<()> {
         let mut m = Map::new();
-        m.insert("ip".to_string(), json!(wg_conf.address));
+        // bare ip, same as report_vpn_status: the CIDR form is rejected with
+        // "Delete VPN information failed" (10220011)
+        let ip = wg_conf.address.split('/').next().unwrap_or(&wg_conf.address);
+        m.insert("ip".to_string(), json!(ip));
         m.insert("public_key".to_string(), json!(wg_conf.public_key));
         m.insert(
             "mode".to_string(),
